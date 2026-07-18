@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<base href="./">
+<meta charset="UTF-8">
+<title>Corvixz Items Editor</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#ffffff;color:#222;font-family:'Segoe UI',sans-serif;overflow:hidden}
+  #canvas-container{width:100vw;height:calc(100vh - 160px)}
+  canvas{display:block}
+  #panel{
+    position:fixed;top:0;right:0;width:280px;height:100vh;
+    background:#f3f3f3;border-left:1px solid #ccc;
+    padding:12px;overflow-y:auto;z-index:10;
+    font-family:Arial,Helvetica,sans-serif;
+  }
+  #panel h2{font-size:13px;margin-bottom:16px;color:#333;text-transform:uppercase;letter-spacing:2px}
+  .section-label{font-size:11px;color:#555;font-weight:bold;margin:14px 0 6px;border-bottom:1px solid #ccc;padding-bottom:3px}
+  .btn-reset{
+    margin-top:6px;padding:4px 8px;border:1px solid #999;
+    background:#e8e8e8;color:#333;cursor:pointer;font-size:11px;
+  }
+  .btn-reset:hover{background:#dcdcdc}
+  .btn-reset-all{
+    margin-top:14px;width:100%;padding:8px;
+    border:1px solid #999;background:#e8e8e8;
+    color:#333;cursor:pointer;font-size:12px;
+  }
+  .btn-reset-all:hover{background:#dcdcdc}
+  .upload-area{
+    margin-top:6px;border:1px solid #999;background:#fff;
+    padding:14px;text-align:center;cursor:pointer;position:relative;
+  }
+  .upload-area:hover{border-color:#333;background:#fafafa}
+  .upload-area input{position:absolute;inset:0;opacity:0;cursor:pointer}
+  .upload-area .label{font-size:12px;color:#555;pointer-events:none}
+  .upload-area img{
+    width:64px;height:64px;border:1px solid #ccc;margin:0 auto 8px;display:block;object-fit:contain;
+  }
+  .slider-row{display:flex;align-items:center;gap:6px;margin:3px 0}
+  .slider-row label{font-size:11px;color:#333;min-width:46px}
+  .slider-row input[type="range"]{flex:1;height:14px}
+  .slider-row .val{display:none}
+  #loading{
+    position:fixed;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;background:#fff;z-index:100;
+  }
+  #loading .spinner{
+    width:44px;height:44px;border:3px solid #eee;
+    border-top-color:#0078d4;border-radius:50%;
+    animation:spin 0.7s linear infinite;margin-bottom:16px;
+  }
+  #loading .text{font-size:14px;color:#555}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #gate{
+    position:fixed;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;background:#fff;z-index:200;gap:14px;
+  }
+  #gate h1{font-size:18px;color:#222;font-weight:600}
+  #gate input{
+    padding:10px 12px;font-size:15px;border:1px solid #ccc;border-radius:4px;width:220px;text-align:center;
+  }
+  #gate button{
+    padding:9px 22px;font-size:14px;border:none;border-radius:4px;background:#0078d4;color:#fff;cursor:pointer;
+  }
+  #gate .err{color:#c33;font-size:12px;min-height:16px}
+</style>
+</head>
+<body>
+<div id="gate">
+  <h1>Corvixz Items Editor</h1>
+  <input id="gate-pass" type="password" placeholder="Enter password" autocomplete="off"/>
+  <button id="gate-btn">Enter</button>
+  <div class="err" id="gate-err"></div>
+</div>
+<div id="loading" style="display:none"><div class="spinner"></div><div class="text">Loading model...</div></div>
+<div id="canvas-container"></div>
+<div id="panel">
+  <div id="parts-list"></div>
+  <button class="btn-reset-all" id="btn-reset-all">Reset All</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./js/lib/three/three.module.js",
+    "three/addons/controls/OrbitControls.js": "./js/lib/three/OrbitControls.js",
+    "three/addons/loaders/GLTFLoader.js": "./js/lib/three/GLTFLoader.js",
+    "three/addons/exporters/GLTFExporter.js": "./js/lib/three/GLTFExporter.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+const PART_META = {
+  Head:       { label: 'Head',       color: '#e8c39e', hex: 0xe8c39e },
+  Torso:      { label: 'Torso',      color: '#ffffff', hex: 0xffffff },
+  'Left Arm': { label: 'Left Arm',   color: '#e8c39e', hex: 0xe8c39e },
+  'Right Arm':{ label: 'Right Arm',  color: '#e8c39e', hex: 0xe8c39e },
+  'Left Leg': { label: 'Left Leg',   color: '#4a4a4a', hex: 0x4a4a4a },
+  'Right Leg':{ label: 'Right Leg',  color: '#4a4a4a', hex: 0x4a4a4a },
+};
+
+const container = document.getElementById('canvas-container');
+const partsList = document.getElementById('parts-list');
+const loadingEl = document.getElementById('loading');
+
+const GATE_HASH = 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481';
+let _unlocked = false;
+function sha256hex(s) {
+  return crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)).then(h => {
+    return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('');
+  });
+}
+function _openEditor() {
+  _unlocked = true;
+  document.getElementById('gate').style.display = 'none';
+  _startApp();
+}
+document.getElementById('gate-btn').addEventListener('click', async () => {
+  const v = document.getElementById('gate-pass').value;
+  const h = await sha256hex(v);
+  if (h === GATE_HASH) _openEditor();
+  else document.getElementById('gate-err').textContent = 'Wrong password';
+});
+document.getElementById('gate-pass').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('gate-btn').click();
+});
+
+window.addEventListener('error', (e) => {
+  const el = document.getElementById('loading');
+  if (el && el.style.display !== 'none') {
+    el.innerHTML = '<span style="color:#c33">Ошибка скрипта: ' + (e.message || e.error) + '</span>';
+  }
+});
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf0f0f0);
+
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(2, 2.2, 3.5);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.8;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+container.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.07;
+controls.target.set(0, 1.1, 0);
+controls.minDistance = 1.2;
+controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.85;
+controls.update();
+
+scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
+keyLight.position.set(3, 6, 4);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(1024, 1024);
+scene.add(keyLight);
+scene.add(new THREE.DirectionalLight(0xffffff, 0.5).translateX(-4).translateY(3).translateZ(-2));
+scene.add(new THREE.DirectionalLight(0xffffff, 0.3).translateY(1).translateZ(-5));
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(30, 30),
+  new THREE.ShadowMaterial({ opacity: 0.1 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.01;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+const partColors = {};
+const partDefaults = {};
+const skinnedData = [];
+let headMeshRef = null;
+let headMaterialRef = null;
+let headBoneRef = null;
+let originalFaceTexture = null;
+let currentHeadTexSource = null;
+let headTexBrightness = 1.08;
+let headTexContrast = 2.31;
+let headTexTint = null;
+let headTexOffsetX = -0.27;
+let headTexOffsetY = -0.18;
+let headTexRot = 0;
+let headTexScale = 0.60;
+let headTexCanvas = null;
+let headTexTexture = null;
+let allClickable = [];
+let headAccessories = [];
+let modelScale = 1;
+let modelRoot = null;
+let modelFlatShading = false;
+let currentAccessory = null;
+let currentAccTexture = null;
+let currentAccCenter = new THREE.Vector3();
+let accTexPreview = null;
+let currentAccFileName = '';
+let pendingAccTransform = null;
+let accBase = { posX: 0, posY: 0, posZ: 0, scale: 1 };
+let accUser = { px: 0, py: 0, pz: 0, scale: 1, rx: 0, ry: 0, rz: 0 };
+
+function getBonePartName(boneName) {
+  const lower = boneName.toLowerCase();
+  if (lower.includes('head')) return 'Head';
+  if (lower.includes('left') && lower.includes('arm')) return 'Left Arm';
+  if (lower.includes('right') && lower.includes('arm')) return 'Right Arm';
+  if (lower.includes('left') && lower.includes('leg')) return 'Left Leg';
+  if (lower.includes('right') && lower.includes('leg')) return 'Right Leg';
+  return 'Torso';
+}
+
+function getVertexPart(sd, vi) {
+  const idx = [sd.skinIndexAttr.getX(vi), sd.skinIndexAttr.getY(vi), sd.skinIndexAttr.getZ(vi), sd.skinIndexAttr.getW(vi)];
+  const wgt = [sd.skinWeightAttr.getX(vi), sd.skinWeightAttr.getY(vi), sd.skinWeightAttr.getZ(vi), sd.skinWeightAttr.getW(vi)];
+  let maxW = -1, pJ = 0;
+  for (let j = 0; j < 4; j++) { if (wgt[j] > maxW) { maxW = wgt[j]; pJ = idx[j]; } }
+  return sd.jointToPart[pJ] || 'Torso';
+}
+
+function setupVertexColorsForSkinnedMesh(skinnedMesh) {
+  const geometry = skinnedMesh.geometry;
+  const skinIndexAttr = geometry.getAttribute('skinIndex');
+  const skinWeightAttr = geometry.getAttribute('skinWeight');
+  const skeleton = skinnedMesh.skeleton;
+  if (!skinIndexAttr || !skinWeightAttr || !skeleton || !skeleton.bones) return;
+  const bones = skeleton.bones;
+  const vertCount = geometry.getAttribute('position').count;
+  const jointToPart = bones.map(b => getBonePartName(b.name));
+
+  const colorAttr = new Float32Array(vertCount * 3);
+
+  for (const [name, meta] of Object.entries(PART_META)) {
+    if (!partColors[name]) partColors[name] = new THREE.Color(meta.hex);
+    if (!partDefaults[name]) partDefaults[name] = new THREE.Color(meta.hex);
+  }
+
+  for (let i = 0; i < vertCount; i++) {
+    const partName = getVertexPart({ skinIndexAttr, skinWeightAttr, jointToPart }, i);
+    const col = partColors[partName] || new THREE.Color(0xcccccc);
+    colorAttr[i * 3] = col.r;
+    colorAttr[i * 3 + 1] = col.g;
+    colorAttr[i * 3 + 2] = col.b;
+  }
+
+  geometry.setAttribute('color', new THREE.BufferAttribute(colorAttr, 3));
+  skinnedMesh.material = skinnedMesh.material.clone();
+  skinnedMesh.material.vertexColors = true;
+  skinnedMesh.material.side = THREE.FrontSide;
+  skinnedMesh.material.flatShading = modelFlatShading;
+  skinnedMesh.material.needsUpdate = true;
+
+  skinnedData.push({ mesh: skinnedMesh, jointToPart, vertCount, skinIndexAttr, skinWeightAttr });
+}
+
+function applyPartColor(partName, color) {
+  partColors[partName] = color.clone();
+  for (const sd of skinnedData) {
+    const colorAttr = sd.mesh.geometry.getAttribute('color');
+    for (let i = 0; i < sd.vertCount; i++) {
+      if (getVertexPart(sd, i) === partName) {
+        colorAttr.setXYZ(i, color.r, color.g, color.b);
+      }
+    }
+    colorAttr.needsUpdate = true;
+  }
+}
+
+let faceProcCanvas = null;
+
+function processFaceImage() {
+  if (!currentHeadTexSource) { faceProcCanvas = null; return; }
+  const src = currentHeadTexSource;
+  const w = src.width || 512;
+  const h = src.height || 512;
+  if (!faceProcCanvas) faceProcCanvas = document.createElement('canvas');
+  faceProcCanvas.width = w;
+  faceProcCanvas.height = h;
+  const fx = faceProcCanvas.getContext('2d');
+  fx.clearRect(0, 0, w, h);
+  fx.drawImage(src, 0, 0, w, h);
+}
+
+function setHeadVertexColor(c) {
+  if (!headMeshRef) return;
+  const attr = headMeshRef.geometry.getAttribute('color');
+  if (!attr) return;
+  for (let i = 0; i < attr.count; i++) attr.setXYZ(i, c.r, c.g, c.b);
+  attr.needsUpdate = true;
+}
+
+function composeHead() {
+  const skin = (partColors && partColors['Head']) ? partColors['Head'] : new THREE.Color(0xe8c39e);
+  if (!headMaterialRef) return;
+  if (!currentHeadTexSource || !faceProcCanvas) {
+    if (headMaterialRef.map !== null) {
+      const old = headMaterialRef.map;
+      headMaterialRef.map = null;
+      headMaterialRef.needsUpdate = true;
+      if (old && old !== originalFaceTexture && old.dispose) old.dispose();
+    }
+    headTexTexture = null;
+    setHeadVertexColor(skin);
+    return;
+  }
+  const S = 1024;
+  if (!headTexCanvas) headTexCanvas = document.createElement('canvas');
+  headTexCanvas.width = S;
+  headTexCanvas.height = S;
+  const cx = headTexCanvas.getContext('2d');
+  cx.fillStyle = '#' + skin.getHexString();
+  cx.fillRect(0, 0, S, S);
+  const iw = faceProcCanvas.width, ih = faceProcCanvas.height;
+  const base = S * 0.5;
+  const fit = base / Math.max(iw, ih);
+  const dw = iw * fit * headTexScale, dh = ih * fit * headTexScale;
+  cx.save();
+  cx.translate(S / 2, S / 2);
+  cx.rotate(headTexRot);
+  cx.drawImage(faceProcCanvas, -dw / 2 + headTexOffsetX * (S * 0.5), -dh / 2 + headTexOffsetY * (S * 0.5), dw, dh);
+  cx.restore();
+  if (!headTexTexture) {
+    headTexTexture = new THREE.CanvasTexture(headTexCanvas);
+    headTexTexture.colorSpace = THREE.SRGBColorSpace;
+  } else {
+    headTexTexture.needsUpdate = true;
+  }
+  const old = headMaterialRef.map;
+  headMaterialRef.map = headTexTexture;
+  headMaterialRef.needsUpdate = true;
+  if (old && old !== headTexTexture && old !== originalFaceTexture && old.dispose) old.dispose();
+  setHeadVertexColor(new THREE.Color(1, 1, 1));
+}
+
+const DEFAULT_FACE_URL = 'Man_face.webp';
+
+function loadDefaultFace() {
+  const img = new Image();
+  img.onload = () => {
+    currentHeadTexSource = img;
+    processFaceImage();
+    composeHead();
+  };
+  img.onerror = () => { console.warn('Default face not found: ' + DEFAULT_FACE_URL); };
+  img.src = DEFAULT_FACE_URL;
+}
+
+const MODEL_URL = 'roblox_r6_rigged.glb';
+
+const loadTimeout = setTimeout(() => {
+  loadingEl.innerHTML = '<span style="color:#c33">Ошибка: модель не загрузилась за 30 секунд.<br>Проверьте подключение к сети и доступность файла <code>' + MODEL_URL + '</code>.</span>';
+}, 30000);
+
+function hideLoading() {
+  clearTimeout(loadTimeout);
+  loadingEl.style.display = 'none';
+}
+
+const loader = new GLTFLoader();
+
+async function _startApp() {
+ if (!_unlocked) return;
+ try {
+  const gltf = await loader.loadAsync(MODEL_URL, (xhr) => {
+    if (xhr.total) {
+      const pct = Math.round((xhr.loaded / xhr.total) * 100);
+      const t = loadingEl.querySelector('.text');
+      if (t) t.textContent = 'Загрузка модели... ' + pct + '%';
+    }
+  });
+  const model = gltf.scene;
+  modelRoot = model;
+  const regularMeshes = [];
+  const allModelMeshes = [];
+
+  model.traverse((child) => {
+    if (child.isSkinnedMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+      setupVertexColorsForSkinnedMesh(child);
+
+      if (child.material && child.material.map) {
+        headMeshRef = child;
+        headMaterialRef = child.material;
+        originalFaceTexture = child.material.map;
+      }
+
+      if (child.skeleton) {
+        child.skeleton.bones.forEach(b => {
+          if (b.name.toLowerCase().includes('head')) headBoneRef = b;
+        });
+        if (!headBoneRef && child.skeleton.bones.length) headBoneRef = child.skeleton.bones[0];
+      }
+      allModelMeshes.push(child);
+    } else if (child.isMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+      child.material = child.material.clone();
+      child.material.flatShading = modelFlatShading;
+      child.material.roughness = 0.4;
+      child.material.metalness = 0.1;
+      regularMeshes.push(child);
+      allModelMeshes.push(child);
+    }
+  });
+  window._modelMeshes = allModelMeshes;
+  window._skinnedData = skinnedData;
+
+  if (!headBoneRef) {
+    model.traverse((o) => {
+      if (o.isBone && o.name.toLowerCase().includes('head')) headBoneRef = o;
+    });
+  }
+  if (!headBoneRef) {
+    model.traverse((o) => { if (o.isBone) headBoneRef = headBoneRef || o; });
+  }
+
+  const box = new THREE.Box3().setFromObject(model);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  modelScale = 2.5 / maxDim;
+  model.scale.setScalar(modelScale);
+  model.position.sub(center.multiplyScalar(modelScale));
+  model.position.y += (size.y * modelScale) / 2;
+
+  scene.add(model);
+  controls.target.set(0, size.y * modelScale * 0.42, 0);
+  controls.update();
+
+  skinnedData.forEach(sd => {
+    sd.mesh.material.map = null;
+    sd.mesh.material.color.set(1, 1, 1);
+    sd.mesh.material.needsUpdate = true;
+  });
+  headTexTexture = null;
+  setHeadVertexColor((partColors && partColors['Head']) ? partColors['Head'] : new THREE.Color(0xe8c39e));
+
+  allClickable = [...skinnedData.map(s => s.mesh), ...regularMeshes];
+
+  buildPanel();
+  loadDefaultFace();
+
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; });
+  window.addEventListener('dragover', (e) => { e.preventDefault(); });
+  window.addEventListener('dragleave', (e) => { e.preventDefault(); if (--dragDepth <= 0) dragDepth = 0; });
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    const glb = Array.from(e.dataTransfer.files).find(f => f.name.endsWith('.glb') || f.name.endsWith('.gltf'));
+    const img = Array.from(e.dataTransfer.files).find(f => f.type.startsWith('image/'));
+    if (glb) loadHeadAccessory(glb);
+    else if (img) loadAccessoryTextureFile(img);
+  });
+  hideLoading();
+
+  renderer.domElement.addEventListener('click', (e) => {
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObjects(allClickable, false);
+    if (hits.length > 0) {
+      const hit = hits[0].object;
+      if (hit.isSkinnedMesh) {
+        const sd = skinnedData.find(s => s.mesh === hit);
+        if (sd) {
+          const faceIdx = hits[0].faceIndex;
+          const vA = hit.geometry.index.getX(faceIdx * 3);
+          selectPart(getVertexPart(sd, vA));
+        }
+      } else selectPart('Head');
+    }
+  });
+ } catch (e) {
+  loadingEl.innerHTML = '<span style="color:#c33">Ошибка обработки модели: ' + (e && e.message ? e.message : e) + '<br>Файл: ' + MODEL_URL + '</span>';
+  console.error(e);
+ }
+}
+
+function selectPart() {}
+
+function buildPanel() {
+  partsList.innerHTML = '';
+
+  const modelLabel = document.createElement('div');
+  modelLabel.className = 'section-label';
+  modelLabel.textContent = 'Model';
+  partsList.appendChild(modelLabel);
+
+  const modelUpload = document.createElement('div');
+  modelUpload.className = 'upload-area';
+  const modelText = document.createElement('div');
+  modelText.className = 'label';
+  modelText.textContent = 'Load GLB';
+  const modelInput = document.createElement('input');
+  modelInput.type = 'file';
+  modelInput.accept = '.glb,.gltf';
+  modelUpload.appendChild(modelText);
+  modelUpload.appendChild(modelInput);
+  partsList.appendChild(modelUpload);
+
+  modelInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) loadHeadAccessory(file);
+  });
+  modelUpload.addEventListener('dragover', (e) => { e.preventDefault(); modelUpload.style.borderColor = '#0078d4'; });
+  modelUpload.addEventListener('dragleave', () => { modelUpload.style.borderColor = '#ccc'; });
+  modelUpload.addEventListener('drop', (e) => {
+    e.preventDefault();
+    modelUpload.style.borderColor = '#ccc';
+    const glb = Array.from(e.dataTransfer.files).find(f => f.name.endsWith('.glb') || f.name.endsWith('.gltf'));
+    if (glb) {
+      const dt = new DataTransfer();
+      dt.items.add(glb);
+      modelInput.files = dt.files;
+      modelInput.dispatchEvent(new Event('change'));
+    }
+  });
+
+  const texLabel = document.createElement('div');
+  texLabel.className = 'section-label';
+  texLabel.textContent = 'Texture';
+  partsList.appendChild(texLabel);
+
+  const texUpload = document.createElement('div');
+  texUpload.className = 'upload-area';
+  accTexPreview = document.createElement('img');
+  accTexPreview.style.cssText = 'max-width:100%;max-height:120px;display:none;margin-bottom:6px;border:1px solid #ddd;';
+  const texText = document.createElement('div');
+  texText.className = 'label';
+  texText.textContent = 'Load image';
+  const texInput = document.createElement('input');
+  texInput.type = 'file';
+  texInput.accept = 'image/*';
+  texUpload.appendChild(accTexPreview);
+  texUpload.appendChild(texText);
+  texUpload.appendChild(texInput);
+  partsList.appendChild(texUpload);
+
+  texInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) loadAccessoryTextureFile(file);
+  });
+  texUpload.addEventListener('dragover', (e) => { e.preventDefault(); texUpload.style.borderColor = '#0078d4'; });
+  texUpload.addEventListener('dragleave', () => { texUpload.style.borderColor = '#ccc'; });
+  texUpload.addEventListener('drop', (e) => {
+    e.preventDefault();
+    texUpload.style.borderColor = '#ccc';
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      texInput.files = dt.files;
+      texInput.dispatchEvent(new Event('change'));
+    }
+  });
+
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'btn-reset';
+  removeBtn.textContent = 'Remove accessory';
+  removeBtn.style.cssText = 'width:100%;margin-top:8px;';
+  removeBtn.addEventListener('click', () => {
+    headAccessories.forEach(a => { if (a.parent) a.parent.remove(a); });
+    headAccessories = [];
+    currentAccessory = null;
+    currentAccTexture = null;
+    if (accTexPreview) { accTexPreview.src = ''; accTexPreview.style.display = 'none'; }
+  });
+  partsList.appendChild(removeBtn);
+
+  const tfLabel = document.createElement('div');
+  tfLabel.className = 'section-label';
+  tfLabel.textContent = 'Transform';
+  partsList.appendChild(tfLabel);
+
+  const tfWrap = document.createElement('div');
+  tfWrap.id = 'acc-tf-wrap';
+  const fields = [
+    ['Forward / Back', 'acc-px', -2, 2, 0.01],
+    ['Up / Down', 'acc-py', -2, 2, 0.01],
+    ['Left / Right', 'acc-pz', -2, 2, 0.01],
+    ['Scale', 'acc-scale', 0.1, 3, 0.01],
+    ['Tilt X', 'acc-rx', -3.14, 3.14, 0.01],
+    ['Tilt Y', 'acc-ry', -3.14, 3.14, 0.01],
+    ['Tilt Z', 'acc-rz', -3.14, 3.14, 0.01],
+  ];
+  fields.forEach(([label, id, min, max, step]) => {
+    const r = document.createElement('div');
+    r.className = 'slider-row';
+    const lab = document.createElement('label');
+    lab.textContent = label;
+    const inp = document.createElement('input');
+    inp.type = 'range'; inp.id = id; inp.min = min; inp.max = max; inp.step = step; inp.value = 0;
+    const val = document.createElement('span');
+    val.className = 'val'; val.id = id + '-val'; val.textContent = '0';
+    inp.addEventListener('input', () => {
+      val.textContent = parseFloat(inp.value).toFixed(2);
+      accUser = {
+        px: parseFloat(document.getElementById('acc-px').value),
+        py: parseFloat(document.getElementById('acc-py').value),
+        pz: parseFloat(document.getElementById('acc-pz').value),
+        scale: parseFloat(document.getElementById('acc-scale').value),
+        rx: parseFloat(document.getElementById('acc-rx').value),
+        ry: parseFloat(document.getElementById('acc-ry').value),
+        rz: parseFloat(document.getElementById('acc-rz').value),
+      };
+      applyAccTransform();
+    });
+    r.appendChild(lab); r.appendChild(inp); r.appendChild(val);
+    tfWrap.appendChild(r);
+  });
+  partsList.appendChild(tfWrap);
+
+  const exportBtn = document.createElement('button');
+  exportBtn.className = 'btn-reset-all';
+  exportBtn.id = 'btn-export-acc';
+  exportBtn.textContent = 'Export GLB';
+  exportBtn.style.marginTop = '8px';
+  exportBtn.addEventListener('click', exportAccessoryGLB);
+  partsList.appendChild(exportBtn);
+}
+
+function syncAccSliders() {
+  const map = {
+    'acc-px': accUser.px, 'acc-py': accUser.py, 'acc-pz': accUser.pz,
+    'acc-scale': accUser.scale, 'acc-rx': accUser.rx, 'acc-ry': accUser.ry, 'acc-rz': accUser.rz,
+  };
+  for (const [id, v] of Object.entries(map)) {
+    const inp = document.getElementById(id);
+    const val = document.getElementById(id + '-val');
+    if (inp) inp.value = v;
+    if (val) val.textContent = parseFloat(v).toFixed(2);
+  }
+}
+
+function setAccessoryTexture(tex) {
+  if (!currentAccessory) return;
+  currentAccessory.traverse(c => {
+    if (c.isMesh && c.material) {
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      mats.forEach(m => {
+        m.map = tex;
+        if (m.color) m.color.set(0xffffff);
+        m.needsUpdate = true;
+      });
+    }
+  });
+}
+
+function loadAccessoryTextureFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      const tex = new THREE.Texture(img);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.flipY = false;
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.needsUpdate = true;
+      currentAccTexture = tex;
+      setAccessoryTexture(tex);
+      if (accTexPreview) { accTexPreview.src = ev.target.result; accTexPreview.style.display = ''; }
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function attachPrefitAccessory(acc) {
+  const attachTo = headBoneRef || modelRoot || model;
+  if (!attachTo) return;
+  acc.position.set(0, 0, 0);
+  acc.rotation.set(0, 0, 0);
+  acc.scale.set(1, 1, 1);
+  currentAccCenter = new THREE.Box3().setFromObject(acc).getCenter(new THREE.Vector3());
+  accBase = { posX: 0, posY: 0, posZ: 0, scale: 1 };
+  accUser = { px: 0, py: 0, pz: 0, scale: 1, rx: 0, ry: 0, rz: 0 };
+  currentAccessory = acc;
+  if (currentAccTexture) setAccessoryTexture(currentAccTexture);
+  applyAccTransform();
+  syncAccSliders();
+  attachTo.add(acc);
+  headAccessories.push(acc);
+}
+
+function loadHeadAccessory(file) {
+  const attachTo = headBoneRef || modelRoot || model;
+  if (!attachTo) return;
+  currentAccFileName = file.name;
+  const url = URL.createObjectURL(file);
+  const accLoader = new GLTFLoader();
+  accLoader.load(url, (gltf) => {
+    const acc = gltf.scene;
+    acc.traverse(c => { if (c.isMesh) { c.castShadow = true; c.material = c.material.clone(); } });
+
+    let prefit = false;
+    acc.traverse(o => { if (o.name === 'prefit_accessory' || (o.userData && o.userData.prefit)) prefit = true; });
+    if (prefit) {
+      attachPrefitAccessory(acc);
+      URL.revokeObjectURL(url);
+      return;
+    }
+
+    const box = new THREE.Box3().setFromObject(acc);
+    const size = box.getSize(new THREE.Vector3());
+    const maxD = Math.max(size.x, size.y, size.z);
+    currentAccCenter = box.getCenter(new THREE.Vector3());
+    let s = 1;
+    if (maxD > 0) {
+      s = (0.8 * modelScale) / maxD;
+      acc.scale.setScalar(s);
+      const center = box.getCenter(new THREE.Vector3()).multiplyScalar(s);
+      acc.position.sub(center);
+    }
+    acc.position.y += 0.15 * modelScale;
+
+    accBase = { posX: acc.position.x, posY: acc.position.y, posZ: acc.position.z, scale: s };
+    accUser = { px: 0, py: 0, pz: 0, scale: 1, rx: 0, ry: 0, rz: 0 };
+    if (pendingAccTransform) {
+      accBase = { posX: pendingAccTransform.px, posY: pendingAccTransform.py, posZ: pendingAccTransform.pz, scale: pendingAccTransform.scale };
+      accUser = { px: 0, py: 0, pz: 0, scale: 1, rx: pendingAccTransform.rx, ry: pendingAccTransform.ry, rz: pendingAccTransform.rz };
+      pendingAccTransform = null;
+    }
+    currentAccessory = acc;
+    if (currentAccTexture) setAccessoryTexture(currentAccTexture);
+    applyAccTransform();
+    syncAccSliders();
+
+    attachTo.add(acc);
+    headAccessories.push(acc);
+    URL.revokeObjectURL(url);
+  }, undefined, (err) => {
+    console.error('Failed to load accessory:', err);
+    const msg = (err && err.message) ? err.message : ('' + err);
+    const t = document.querySelector('#parts-list');
+    if (t) {
+      const d = document.createElement('div');
+      d.style.cssText = 'margin-top:8px;padding:6px;background:#fdd;border:1px solid #c33;color:#c33;font-size:11px;';
+      d.textContent = 'GLB load error: ' + msg;
+      t.appendChild(d);
+    }
+    URL.revokeObjectURL(url);
+  });
+}
+
+function applyAccTransform() {
+  if (!currentAccessory) return;
+  const S = accBase.scale * accUser.scale;
+  const euler = new THREE.Euler(accUser.rx, accUser.ry, accUser.rz);
+  const R = new THREE.Matrix4().makeRotationFromEuler(euler);
+  const T = new THREE.Vector3(
+    accBase.posX + accBase.scale * currentAccCenter.x + accUser.px,
+    accBase.posY + accBase.scale * currentAccCenter.y + accUser.py,
+    accBase.posZ + accBase.scale * currentAccCenter.z + accUser.pz
+  );
+  const SC = new THREE.Vector3(currentAccCenter.x * S, currentAccCenter.y * S, currentAccCenter.z * S).applyMatrix4(R);
+  currentAccessory.scale.setScalar(S);
+  currentAccessory.rotation.copy(euler);
+  currentAccessory.position.copy(T).sub(SC);
+}
+
+function exportAccessoryGLB() {
+  if (!_unlocked) return;
+  const attachTo = headBoneRef || modelRoot || model;
+  if (!currentAccessory || !attachTo) return;
+  scene.updateMatrixWorld(true);
+  attachTo.updateMatrixWorld(true);
+  const boneInv = attachTo.matrixWorld.clone().invert();
+  const exportRoot = new THREE.Group();
+  exportRoot.name = 'prefit_accessory';
+  exportRoot.userData.prefit = true;
+  currentAccessory.updateMatrixWorld(true);
+  currentAccessory.traverse(c => {
+    if (c.isMesh && c.geometry) {
+      c.updateMatrixWorld(true);
+      const m = new THREE.Matrix4().multiplyMatrices(boneInv, c.matrixWorld);
+      const g = c.geometry.clone();
+      g.applyMatrix4(m);
+      const newMesh = new THREE.Mesh(g, c.material.clone());
+      newMesh.castShadow = true;
+      exportRoot.add(newMesh);
+    }
+  });
+  const exporter = new GLTFExporter();
+  exporter.parse(exportRoot, (result) => {
+    const blob = new Blob([result], { type: 'model/gltf-binary' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'accessory.glb';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, (err) => { console.error('Export failed:', err); }, { binary: true });
+}
+
+document.getElementById('btn-reset-all').addEventListener('click', () => {
+  headAccessories.forEach(a => { if (a.parent) a.parent.remove(a); });
+  headAccessories = [];
+  currentAccessory = null;
+  currentAccTexture = null;
+  if (accTexPreview) { accTexPreview.src = ''; accTexPreview.style.display = 'none'; }
+  removeTorsoTexture();
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+let accArrowLayer = null;
+let accArrowEls = {};
+const ACC_ARROW_STEP = 0.05;
+
+function ensureAccArrows() {
+  if (accArrowLayer) return;
+  accArrowLayer = document.createElement('div');
+  accArrowLayer.style.cssText = 'position:fixed;left:0;top:0;pointer-events:none;z-index:50;';
+  const defs = [
+    { id: 'up', sym: '▲', sx: 0, sy: 1, sz: 0, ox: 0, oy: -44 },
+    { id: 'down', sym: '▼', sx: 0, sy: -1, sz: 0, ox: 0, oy: 44 },
+    { id: 'left', sym: '◀', sx: -1, sy: 0, sz: 0, ox: -44, oy: 0 },
+    { id: 'right', sym: '▶', sx: 1, sy: 0, sz: 0, ox: 44, oy: 0 },
+    { id: 'front', sym: 'Z+', sx: 0, sy: 0, sz: 1, ox: -44, oy: -44 },
+    { id: 'back', sym: 'Z-', sx: 0, sy: 0, sz: -1, ox: 44, oy: 44 }
+  ];
+  defs.forEach(d => {
+    const b = document.createElement('button');
+    b.textContent = d.sym;
+    b.style.cssText = 'position:fixed;transform:translate(-50%,-50%);pointer-events:auto;width:30px;height:30px;line-height:28px;text-align:center;border-radius:50%;border:1px solid #0078d4;background:rgba(255,255,255,0.92);color:#0078d4;font-size:12px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.35);padding:0;';
+    b.addEventListener('click', (e) => { e.stopPropagation(); nudgeAcc(d.sx, d.sy, d.sz); });
+    accArrowLayer.appendChild(b);
+    accArrowEls[d.id] = { el: b, def: d };
+  });
+  document.body.appendChild(accArrowLayer);
+}
+
+function nudgeAcc(sx, sy, sz) {
+  if (!currentAccessory) return;
+  const right = new THREE.Vector3();
+  const up = new THREE.Vector3();
+  const fwd = new THREE.Vector3();
+  camera.matrixWorld.extractBasis(right, up, fwd);
+  accUser.px += (right.x * sx + up.x * sy + fwd.x * sz) * ACC_ARROW_STEP;
+  accUser.py += (right.y * sx + up.y * sy + fwd.y * sz) * ACC_ARROW_STEP;
+  accUser.pz += (right.z * sx + up.z * sy + fwd.z * sz) * ACC_ARROW_STEP;
+  applyAccTransform();
+  syncAccSliders();
+}
+
+function updateAccArrows() {
+  if (!accArrowLayer) return;
+  if (!currentAccessory) { accArrowLayer.style.display = 'none'; return; }
+  const box = new THREE.Box3().setFromObject(currentAccessory);
+  if (box.isEmpty()) { accArrowLayer.style.display = 'none'; return; }
+  const wp = box.getCenter(new THREE.Vector3());
+  const ndc = wp.clone().project(camera);
+  if (ndc.z > 1) { accArrowLayer.style.display = 'none'; return; }
+  accArrowLayer.style.display = '';
+  const rect = renderer.domElement.getBoundingClientRect();
+  const sx = rect.left + (ndc.x * 0.5 + 0.5) * rect.width;
+  const sy = rect.top + (-ndc.y * 0.5 + 0.5) * rect.height;
+  Object.values(accArrowEls).forEach(a => {
+    a.el.style.left = (sx + a.def.ox) + 'px';
+    a.el.style.top = (sy + a.def.oy) + 'px';
+  });
+}
+
+ensureAccArrows();
+
+(function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+  updateAccArrows();
+})();
+
+document.addEventListener('click', (e) => {
+  const val = e.target.closest('.val');
+  if (!val || val.tagName === 'INPUT') return;
+  const sliderId = val.id.replace(/-val$/, '');
+  const slider = document.getElementById(sliderId);
+  if (!slider) return;
+  const origText = val.textContent;
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.value = parseFloat(slider.value);
+  input.min = slider.min;
+  input.max = slider.max;
+  input.step = slider.step;
+  input.style.cssText = 'width:56px;font-size:11px;font-family:monospace;text-align:right;border:1px solid #0078d4;border-radius:3px;padding:1px 3px;outline:none;background:#fff;';
+  val.replaceWith(input);
+  input.focus();
+  input.select();
+  const commit = () => {
+    let v = parseFloat(input.value);
+    if (isNaN(v)) v = parseFloat(slider.value);
+    v = Math.max(parseFloat(slider.min), Math.min(parseFloat(slider.max), v));
+    slider.value = v;
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+    const span = document.createElement('span');
+    span.className = 'val';
+    span.id = sliderId + '-val';
+    span.textContent = parseFloat(v).toFixed(2);
+    input.replaceWith(span);
+  };
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+    if (ev.key === 'Escape') { input.value = parseFloat(slider.value); commit(); }
+  });
+});
+
+function partLabel(name) {
+  const n = (name || '').toLowerCase();
+  if (n.includes('torso') || n.includes('body')) return 'Торс';
+  if (n.includes('head')) return 'Голова';
+  if (n.includes('arm') && n.includes('left')) return 'Левая рука';
+  if (n.includes('arm') && n.includes('right')) return 'Правая рука';
+  if (n.includes('arm')) return 'Рука';
+  if (n.includes('leg') && n.includes('left')) return 'Левая нога';
+  if (n.includes('leg') && n.includes('right')) return 'Правая нога';
+  if (n.includes('leg')) return 'Нога';
+  return name || 'Часть';
+}
+
+let torsoMeshRef = null;
+let torsoTexture = null;
+let torsoTexPreview = null;
+
+function findTorsoMesh() {
+  const sd = window._skinnedData || [];
+  let best = null, bestScore = -1;
+  sd.forEach(s => {
+    let torso = 0, total = s.vertCount || 0;
+    for (let i = 0; i < total; i++) {
+      if (getVertexPart(s, i) === 'Torso') torso++;
+    }
+    const score = total ? torso / total : 0;
+    if (score > bestScore) { bestScore = score; best = s.mesh; }
+  });
+  if (best && bestScore > 0.3) return best;
+  const meshes = window._modelMeshes || [];
+  const byName = meshes.find(m => {
+    const n = (m.name || '').toLowerCase();
+    return n.includes('torso') || n.includes('body');
+  });
+  return byName || best;
+}
+
+let torsoCanvasTex = null;
+
+function applyTorsoTexture(texImg) {
+  removeTorsoTexture();
+  torsoMeshRef = findTorsoMesh();
+  if (!torsoMeshRef) return;
+  const geo = torsoMeshRef.geometry;
+  const pos = geo.getAttribute('position');
+  const uv = geo.getAttribute('uv');
+  const idx = geo.index;
+  if (!pos || !uv) return;
+  const baseHex = (PART_META.Torso && PART_META.Torso.color) || '#e8c39e';
+  const W = 1024, H = 1024;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = baseHex;
+  ctx.fillRect(0, 0, W, H);
+  const triCount = idx ? idx.count / 3 : pos.count / 3;
+  ctx.save();
+  for (let t = 0; t < triCount; t++) {
+    const i0 = idx ? idx.getX(t * 3) : t * 3;
+    const i1 = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+    const i2 = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+    const z0 = pos.getZ(i0), z1 = pos.getZ(i1), z2 = pos.getZ(i2);
+    if (((z0 + z1 + z2) / 3) <= 0) continue;
+    const ax = uv.getX(i0) * W, ay = (1 - uv.getY(i0)) * H;
+    const bx = uv.getX(i1) * W, by = (1 - uv.getY(i1)) * H;
+    const cx = uv.getX(i2) * W, cy = (1 - uv.getY(i2)) * H;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.lineTo(cx, cy); ctx.closePath();
+    ctx.save();
+    ctx.clip();
+    ctx.drawImage(texImg, 0, 0, W, H);
+    ctx.restore();
+  }
+  ctx.restore();
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.flipY = false;
+  tex.needsUpdate = true;
+  const mat = torsoMeshRef.material;
+  mat.map = tex;
+  mat.vertexColors = false;
+  mat.color = new THREE.Color(0xffffff);
+  mat.transparent = false;
+  mat.needsUpdate = true;
+  torsoCanvasTex = tex;
+  torsoTexture = tex;
+}
+
+function loadTorsoTextureFile(file) {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    applyTorsoTexture(img);
+    if (torsoTexPreview) {
+      torsoTexPreview.src = url;
+      torsoTexPreview.style.display = 'block';
+    }
+    URL.revokeObjectURL(url);
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); };
+  img.src = url;
+}
+
+function removeTorsoTexture() {
+  if (torsoMeshRef) torsoMeshRef = findTorsoMesh();
+  if (torsoMeshRef && torsoMeshRef.material) {
+    if (torsoCanvasTex) { torsoCanvasTex.dispose(); torsoCanvasTex = null; }
+    const mat = torsoMeshRef.material;
+    mat.map = null;
+    mat.vertexColors = true;
+    mat.color = new THREE.Color((PART_META.Torso && PART_META.Torso.hex) || 0xe8c39e);
+    mat.needsUpdate = true;
+  }
+  torsoTexture = null;
+  if (torsoTexPreview) { torsoTexPreview.src = ''; torsoTexPreview.style.display = 'none'; }
+}
+
+function matchGroup(mesh, group) {
+  const n = (mesh.name || '').toLowerCase();
+  if (group === 'torso' || group === 'shirt') return n.includes('torso') || n.includes('body');
+  if (group === 'arms') return n.includes('arm');
+  if (group === 'legs') return n.includes('leg');
+  if (group === 'all') return true;
+  return false;
+}
+
+function downloadUVTemplate(group) {
+  const meshes = (window._modelMeshes || []).filter(m => matchGroup(m, group));
+  const W = 1024, H = 1024;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 1;
+  const palette = ['#0078d4', '#e81123', '#107c10', '#ff8c00', '#744da5', '#008272'];
+  let ci = 0;
+  meshes.forEach(mesh => {
+    const geo = mesh.geometry;
+    if (!geo) return;
+    const uv = geo.getAttribute('uv');
+    const pos = geo.getAttribute('position');
+    if (!uv || !pos) return;
+    const idx = geo.index;
+    const color = palette[ci % palette.length];
+    ci++;
+    const triCount = idx ? idx.count / 3 : pos.count / 3;
+    ctx.fillStyle = color + '33';
+    ctx.strokeStyle = color;
+    for (let t = 0; t < triCount; t++) {
+      const i0 = idx ? idx.getX(t * 3) : t * 3;
+      const i1 = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+      const i2 = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+      const a = [uv.getX(i0), uv.getX(i1), uv.getX(i2)];
+      const b = [uv.getY(i0), uv.getY(i1), uv.getY(i2)];
+      let front = true;
+      if (group === 'shirt') {
+        const z0 = pos.getZ ? pos.getZ(i0) : 0;
+        const z1 = pos.getZ ? pos.getZ(i1) : 0;
+        const z2 = pos.getZ ? pos.getZ(i2) : 0;
+        front = ((z0 + z1 + z2) / 3) > 0;
+      }
+      ctx.beginPath();
+      ctx.moveTo(a[0] * W, (1 - b[0]) * H);
+      ctx.lineTo(a[1] * W, (1 - b[1]) * H);
+      ctx.lineTo(a[2] * W, (1 - b[2]) * H);
+      ctx.closePath();
+      if (group === 'shirt' && !front) {
+        ctx.fillStyle = '#0000000a';
+        ctx.strokeStyle = '#cccccc';
+      } else {
+        ctx.fillStyle = color + '33';
+        ctx.strokeStyle = color;
+      }
+      ctx.fill();
+      ctx.stroke();
+    }
+    const cx = W / 2, cy = 24 + ci * 22;
+    ctx.fillStyle = color;
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillText(group === 'shirt' ? 'ПЕРЕД ТОРСА — ФУТБОЛКА' : partLabel(mesh.name), 12, cy);
+  });
+  if (!meshes.length) {
+    ctx.fillStyle = '#c33';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillText('Нет мешей для группы: ' + group, 20, H / 2);
+  }
+  const url = cv.toDataURL('image/png');
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'uv_template_' + group + '.png';
+  a.click();
+}
+
+function showUVPreview(file) {
+  const url = URL.createObjectURL(file);
+  let modal = document.getElementById('uv-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'uv-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:300;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;';
+    const img = document.createElement('img');
+    img.id = 'uv-modal-img';
+    img.style.cssText = 'max-width:90vw;max-height:80vh;border:1px solid #ccc;background:#fff;';
+    const close = document.createElement('button');
+    close.textContent = 'Закрыть';
+    close.style.cssText = 'padding:8px 20px;border:none;border-radius:4px;background:#0078d4;color:#fff;cursor:pointer;';
+    close.onclick = () => { modal.style.display = 'none'; };
+    modal.appendChild(img);
+    modal.appendChild(close);
+    document.body.appendChild(modal);
+  }
+  document.getElementById('uv-modal-img').src = url;
+  modal.style.display = 'flex';
+}
+</script>
+</body>
+</html>
